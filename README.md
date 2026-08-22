@@ -69,15 +69,22 @@ events, you find out in two minutes instead of after a full deploy.
    python watcher.py
    ```
    You should see each team/venue resolve to a slug, a count of events
-   checked, and either deals printed to the console or "No qualifying deals
-   this run."
+   checked, then "No qualifying deals this run" followed by a signal-coverage
+   line.
 
-   **This run is the real test.** If you see events checked but never any
-   deals, temporarily set `deal_threshold_pct` to `0.99` in `config.json` and
-   re-run — that flags almost everything. If you still get nothing, SeatGeek
-   isn't returning `stats.lowest_price` / `average_price` for your events on
-   your API tier, and the tool can't work as-is. Tell me and we'll rework the
-   data source. Set the threshold back to `0.65` once you've confirmed.
+   **On a fresh install, no deals is the correct result** — the DROP signal
+   has no history to compare against yet. What matters on this first run is
+   the coverage line:
+   ```
+   Signal coverage: DROP can judge 0/47 events, PEER can judge 47/47.
+   ```
+   `PEER can judge N/N` where N > 0 confirms SeatGeek is returning
+   `stats.lowest_price`, which is the one field everything depends on. If PEER
+   can judge 0 events while events were checked, the API isn't giving you
+   price stats and the tool can't work as-is — say so and we'll rework the
+   data source.
+
+   DROP starts working after about a day and a half of runs.
 
 ### Phase 2 — wire up push notifications
 
@@ -138,15 +145,74 @@ API key. It's the only notification channel; there's nothing else to set up.
     activity, so it should stay alive — but if alerts ever go quiet for a
     long stretch, check the Actions tab first.
 
-## Tuning the deal threshold
+## How a deal is decided
 
-`deal_threshold_pct` in `config.json` (default `0.65`) means: flag an event
-when its lowest listing price is at or below 65% of that event's average
-listing price — i.e. a 35%+ discount. Lower the number for stricter/rarer
-alerts, raise it for more (weaker) alerts.
+An alert fires only when **every signal with enough data to judge agrees**.
 
-`min_listing_count` (default `3`) avoids flagging events with too few
-listings for "average price" to mean much.
+**DROP** — this event's floor price against its own recent baseline (the
+median of its own past observations, excluding the last 12 hours so a fall
+is measured against where the price *was* sitting). Catches a sudden
+mispricing or a panic listing.
+
+**PEER** — this event's floor price against the median floor price of its
+sibling events: other Jazz home games, other Utes games, and so on. Catches
+the game the market has underpriced relative to its peers.
+
+Both available → both must fire. Only one available → that one must fire
+alone. Neither → no alert.
+
+Requiring agreement is the point. On its own, PEER fires forever on the
+worst opponent of the season — a game that is cheap because it deserves to
+be. On its own, DROP fires on every minor dip. Together they describe a
+game that is underpriced against its peers *and* has just moved, which is
+the shape of a real mispricing.
+
+This also replaced the original "cheapest listing vs. event average" rule,
+which was near-useless: the cheapest seat is always the nosebleeds, so one
+$8 upper-deck listing made every event look like a steal.
+
+### Settings in `config.json`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `drop_pct` | `0.20` | DROP fires at this much below the event's own baseline |
+| `peer_pct` | `0.25` | PEER fires at this much below the sibling-game median |
+| `min_listing_count` | `3` | Ignore events with too little inventory to mean anything |
+| `min_history_points` | `3` | Observations needed before DROP can judge an event |
+| `min_peer_events` | `4` | Sibling events needed before PEER can judge |
+| `baseline_lag_hours` | `12` | How long a price must settle before it counts toward the baseline |
+| `history_days` | `21` | How much per-event price history to retain |
+| `history_interval_hours` | `4` | Minimum gap between recorded price points (the watcher runs far more often than it needs to record) |
+
+Raise `drop_pct` / `peer_pct` for rarer, stronger alerts; lower them for
+more. Tune these against your Phase 5 paper-trading data rather than
+guessing — the defaults are a starting point, not a finding.
+
+### A note on Deal Score
+
+SeatGeek's per-listing Deal Score is **not available through the public
+API** — the API returns event-level aggregates, not individual listings with
+section, row, and score. Getting that data would mean scraping seatgeek.com,
+which their Terms of Use prohibit.
+
+It's also less of a loss than it sounds. Deal Score already measures a
+listing's price against SeatGeek's estimated market value for that seat
+based on row, section, and comparable listings — so "Deal Score 10" and
+"well below comparable seats" are close to the same statement. The workflow
+that works: this tool narrows hundreds of events down to a few worth a look,
+then you open the event on SeatGeek and check Deal Scores per listing before
+buying. Every alert message ends with that reminder.
+
+## Testing the logic
+
+`test_logic.py` exercises the deal rules offline — no API key, no network:
+
+```
+python test_logic.py
+```
+
+Useful after changing any threshold in `config.json`, or if alerts ever
+start behaving in a way you don't expect.
 
 ## Running locally instead of GitHub Actions
 
@@ -175,7 +241,9 @@ rather not use GitHub Actions.
 
 ## Files
 
-- `watcher.py` — the whole thing: fetch events, compute deal scores, alert.
+- `watcher.py` — the whole thing: fetch events, evaluate the two signals, alert.
+- `test_logic.py` — offline tests for the deal rules; no API key needed.
 - `config.example.json` — copy to `config.json`, holds tracked teams/venues and thresholds (not secret).
-- `resolved.json` / `state.json` — auto-created caches (performer/venue slug lookups, and dedupe state so you're not re-alerted every 20 minutes for the same deal).
+- `history.json` — auto-created price history per event, the input to the DROP signal. Deleting it resets DROP to a cold start.
+- `resolved.json` / `state.json` — auto-created caches (slug lookups, and dedupe state so you're not re-alerted every 20 minutes for the same deal).
 - `.github/workflows/watch.yml` — the schedule.
