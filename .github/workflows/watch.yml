@@ -1,0 +1,39 @@
+name: SeatGeek Deal Watcher
+
+on:
+  schedule:
+    # Every 20 minutes. GitHub's scheduler is best-effort, not exact-to-the-minute.
+    - cron: "*/20 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Ensure config.json exists
+        run: test -f config.json || cp config.example.json config.json
+
+      - name: Run watcher
+        env:
+          SEATGEEK_CLIENT_ID: ${{ secrets.SEATGEEK_CLIENT_ID }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python watcher.py
+
+      - name: Persist watcher state
+        run: |
+          git config user.name "seatgeek-watcher-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state.json resolved.json
+          git diff --cached --quiet || git commit -m "Update watcher state [skip ci]"
+          git push
