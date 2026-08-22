@@ -1,0 +1,15 @@
+{
+  "deal_threshold_pct": 0.65,
+  "min_listing_count": 3,
+  "tracked_performers": [
+    "Utah Jazz",
+    "Utah Mammoth",
+    "Utah Utes Football",
+    "Utah Utes Basketball",
+    "BYU Cougars Football",
+    "BYU Cougars Basketball"
+  ],
+  "tracked_venues": [
+    "Delta Center"
+  ]
+}
